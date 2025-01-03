@@ -7,9 +7,19 @@ from time import sleep
 
 # Load GitHub tokens, server URL, and organization names from .env file
 load_dotenv()
-GITHUB_TOKENS = os.getenv("GITHUB_TOKENS").split(",")  # Convert comma-separated tokens to list
-GITHUB_SERVER_URL = os.getenv("GITHUB_SERVER_URL")
-ORG_NAMES = os.getenv("ORG_NAMES").split(",")  # Convert comma-separated names to list
+
+# Provide default values in case environment variables are not set
+GITHUB_TOKENS = [token.strip() for token in os.getenv("GITHUB_TOKENS", "").split(",") if token.strip()]
+GITHUB_SERVER_URL = os.getenv("GITHUB_SERVER_URL", "").strip()
+ORG_NAMES = [org.strip() for org in os.getenv("ORG_NAMES", "").split(",") if org.strip()]
+
+# Validate required environment variables
+if not GITHUB_TOKENS:
+    raise ValueError("GITHUB_TOKENS is missing or empty in the .env file.")
+if not GITHUB_SERVER_URL:
+    raise ValueError("GITHUB_SERVER_URL is missing or empty in the .env file.")
+if not ORG_NAMES:
+    raise ValueError("ORG_NAMES is missing or empty in the .env file.")
 
 # GitHub Enterprise Server GraphQL API endpoint
 API_URL = f"{GITHUB_SERVER_URL}/graphql"
@@ -61,7 +71,7 @@ def fetch_pull_requests_count(repo_name, org_name):
     while True:
         variables = {"org": org_name, "repo": repo_name, "cursor": cursor}
         try:
-            response = requests.post(API_URL, json={"query": query, "variables": variables}, headers=get_headers())
+            response = requests.post(API_URL, json={"query": query, "variables": variables}, headers=get_headers(), timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -156,9 +166,9 @@ def fetch_org_repos(org_name):
     cursor = None
 
     while True:
-        variables = {"org": org_name.strip(), "cursor": cursor}
+        variables = {"org": org_name, "cursor": cursor}
         try:
-            response = requests.post(API_URL, json={"query": query, "variables": variables}, headers=get_headers())
+            response = requests.post(API_URL, json={"query": query, "variables": variables}, headers=get_headers(), timeout=10)
             response.raise_for_status()
             data = response.json()
 
@@ -168,7 +178,6 @@ def fetch_org_repos(org_name):
                 switch_token()
                 continue
 
-            # Extract repository nodes and page info
             repos = data.get("data", {}).get("organization", {}).get("repositories", {}).get("nodes", [])
             page_info = data.get("data", {}).get("organization", {}).get("repositories", {}).get("pageInfo", {})
             has_next_page = page_info.get("hasNextPage", False)
@@ -185,26 +194,13 @@ def fetch_org_repos(org_name):
                     continue
 
                 try:
-                    # Safely access repository fields with defaults for missing or null values
                     name = repo.get("name", "N/A")
                     is_private = "Private" if repo.get("isPrivate", False) else "Public"
                     disk_usage = repo.get("diskUsage", "N/A")
-
-                    # Access defaultBranchRef and nested fields
-                    default_branch_ref = repo.get("defaultBranchRef", {})
-                    default_branch = default_branch_ref.get("name", "N/A")
-                    target = default_branch_ref.get("target", {})
-                    history = target.get("history", {})
-                    total_commits = history.get("totalCount", 0)
-
-                    # Last pusher details
-                    nodes = history.get("nodes", [{}])
-                    last_pusher = nodes[0].get("author", {}).get("user", {}).get("login", "N/A") if nodes else "N/A"
-
-                    # Fetch accurate counts for open and combined closed (incl. merged) pull requests
+                    default_branch = repo.get("defaultBranchRef", {}).get("name", "N/A")
+                    total_commits = repo.get("defaultBranchRef", {}).get("target", {}).get("history", {}).get("totalCount", 0)
+                    last_pusher = repo.get("defaultBranchRef", {}).get("target", {}).get("history", {}).get("nodes", [{}])[0].get("author", {}).get("user", {}).get("login", "N/A")
                     open_pull_requests, closed_pull_requests = fetch_pull_requests_count(name, org_name)
-
-                    # Issues, languages, releases, tags, and other details
                     open_issues = repo.get("openIssues", {}).get("totalCount", 0)
                     closed_issues = repo.get("closedIssues", {}).get("totalCount", 0)
                     languages = ", ".join([lang.get("name", "N/A") for lang in repo.get("languages", {}).get("nodes", [])])
@@ -238,11 +234,8 @@ def fetch_org_repos(org_name):
                     logging.error(f"Error processing repository {repo.get('name', 'N/A')} in organization {org_name}: {e}")
                     print(f"Error processing repository {repo.get('name', 'N/A')} in organization {org_name}: {e}")
 
-            # Stop if there are no more pages
             if not has_next_page:
                 break
-
-            # Respect rate limits by pausing briefly
             sleep(1)
 
         except requests.exceptions.RequestException as e:
@@ -258,7 +251,6 @@ def fetch_org_repos(org_name):
 
 def main():
     for org in ORG_NAMES:
-        org = org.strip()
         print(f"Processing organization: {org}")
         repos = fetch_org_repos(org)
 
